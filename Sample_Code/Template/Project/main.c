@@ -60,7 +60,7 @@ typedef enum{
 
 #define GPIO_PIN_WAKEUP							(P30)
 #define GPIO_PIN_ADC								(P05)
-#define GPIO_PIN_TIMER							(P04)
+#define GPIO_PIN_TIMER							(P17)	//(P04)
 
 /*
 		FUNCTION ENABLE
@@ -69,7 +69,7 @@ typedef enum{
 #define ENABLE_REDUCE_CODESIZE
 //#define ENABLE_ADC_IRQ
 //#define ENABLE_TIMER_IRQ
-//#define ENABLE_UART
+#define ENABLE_UART
 #define ENABLE_WAKEUP
 
 
@@ -77,7 +77,14 @@ typedef enum{
 		INTERFACE DEFINE
 */
 
+//#define ENABLE_16MHz
+#define ENABLE_24MHz
+
+#if defined (ENABLE_16MHz)
+#define SYS_CLOCK 								(16000000ul)
+#elif defined (ENABLE_24MHz)
 #define SYS_CLOCK 								(24000000ul)
+#endif
 
 #define ADC_RESOLUTION							(4096ul)
 #define ADC_REF_VOLTAGE							(5000ul)//(3300ul)	//(float)(3.3f)
@@ -134,7 +141,6 @@ uint16_t adc_data = 0;
 //Misc
 volatile unsigned char xdata page_buffer[128];
 uint8_t data_RWK = 0;
-unsigned long int cnt_poweron_times = 0;
 
 uint8_t is_flag_set(Flag_Index idx)
 {
@@ -151,27 +157,6 @@ void set_flag(Flag_Index idx , uint8_t en)
 	{
 		BitFlag_OFF(ReadBit(idx));
 	}
-}
-
-/*
-	scenario : 
-	1. all function execute quick after power on then entry power down
-	2. wake up from power down , peripheral/timer will be disable
-	3. since wake up timing is 4 sec , use this as base coutner
-*/
-void reset_PowerOnTimes(void)
-{
-	cnt_poweron_times = 0;
-}
-
-void inc_PowerOnTimes(void)
-{
-	cnt_poweron_times++;
-}
-
-unsigned long int get_PowerOnTimes(void)
-{
-	return cnt_poweron_times;
 }
 
 uint16_t get_ADCModifiedMovingAverage (void)
@@ -482,6 +467,7 @@ void WakeUp_Timer_ISR (void)   interrupt 17     //ISR for self wake-up timer
 {
 	set_gpio_Function(GPIO_Wakeup,Enable);	
 	
+	ENABLE_UART0_INTERRUPT;	
     clr_WKCON_WKTF;	//clr_WKTF;               	//clear interrupt flag
 }
 
@@ -596,6 +582,30 @@ void send_UARTString(uint8_t* Data)
 	#endif
 }
 
+void send_UARTASCII(uint16_t Temp)
+{
+    uint8_t print_buf[16];
+    uint16_t i = 15, j;
+
+    *(print_buf + i) = '\0';
+    j = (uint16_t)Temp >> 31;
+    if(j)
+        (uint16_t) Temp = ~(uint16_t)Temp + 1;
+    do
+    {
+        i--;
+        *(print_buf + i) = '0' + (uint16_t)Temp % 10;
+        (uint16_t)Temp = (uint16_t)Temp / 10;
+    }
+    while((uint16_t)Temp != 0);
+    if(j)
+    {
+        i--;
+        *(print_buf + i) = '-';
+    }
+    send_UARTString(print_buf + i);
+}
+
 void Serial_ISR (void) interrupt 4 
 {
     if (RI)
@@ -622,8 +632,15 @@ void init_UART0(void)
 	set_PCON_SMOD;        //UART0 Double Rate Enable
 	T3CON &= 0xF8;        //T3PS2=0,T3PS1=0,T3PS0=0(Prescale=1)
 	set_T3CON_BRCK;        //UART0 baud rate clock source = Timer3
+	
+	#if defined (ENABLE_16MHz)
+	RH3    = HIBYTE(65536 - (1000000/u32Baudrate)-1);  
+	RL3    = LOBYTE(65536 - (1000000/u32Baudrate)-1);  
+	#elif defined (ENABLE_24MHz)
 	RH3    = HIBYTE(65536 - (SYS_CLOCK/16/u32Baudrate));  
 	RL3    = LOBYTE(65536 - (SYS_CLOCK/16/u32Baudrate));  
+	#endif
+	
 	set_T3CON_TR3;         //Trigger Timer3
 	set_IE_ES;
 
@@ -638,6 +655,30 @@ void init_UART0(void)
 }
 #endif
 
+#if defined (ENABLE_16MHz)
+void MODIFY_HIRC_16(void)
+{
+    unsigned char data hircmap0,hircmap1;
+    set_CHPCON_IAPEN;
+    IAPAL = 0x30;
+    IAPAH = 0x00;
+    IAPCN = READ_UID;
+    set_IAPTRG_IAPGO;
+    hircmap0 = IAPFD;
+    IAPAL = 0x31;
+    IAPAH = 0x00;
+    set_IAPTRG_IAPGO;
+    hircmap1 = IAPFD;
+    clr_CHPCON_IAPEN;
+    TA=0XAA;
+    TA=0X55;
+    RCTRIM0 = hircmap0;
+    TA=0XAA;
+    TA=0X55;
+    RCTRIM1 = hircmap1;
+}
+
+#elif defined (ENABLE_24MHz)
 void MODIFY_HIRC_24(void)
 {
     unsigned char data hircmap0,hircmap1;
@@ -665,6 +706,14 @@ void MODIFY_HIRC_24(void)
     }
 }
 
+#endif
+
+void flow_ReportDataToUart(uint16_t arg)
+{
+	send_UARTASCII(arg);
+	send_UARTString("\r\n");	
+}
+
 void flow_EntryLowPower(void)
 {
 	#if defined (ENABLE_WAKEUP)		
@@ -672,6 +721,7 @@ void flow_EntryLowPower(void)
 
 	#if 1
 	ALL_GPIO_QUASI_MODE;
+	DISABLE_UART0_INTERRUPT;	
 	DISABLE_BOD;
 	set_PCON_PD;
 	
@@ -679,8 +729,6 @@ void flow_EntryLowPower(void)
 	ENABLE_GLOBAL_INTERRUPT;
 	set_PCON_IDLE;
 	#endif
-
-	inc_PowerOnTimes();
 	
 	#endif	
 }
@@ -688,8 +736,11 @@ void flow_EntryLowPower(void)
 
 void main (void) 
 {
-
+	#if defined (ENABLE_16MHz)
+	MODIFY_HIRC_16();
+	#elif defined (ENABLE_24MHz)
     MODIFY_HIRC_24();
+	#endif
 
     ALL_GPIO_QUASI_MODE;
     ENABLE_GLOBAL_INTERRUPT;
@@ -701,10 +752,17 @@ void main (void)
 	#if defined (ENABLE_UART)
     init_UART0();
 	send_UARTString("INIT UART\r\n");
+
+	// send ASCII
+	flow_ReportDataToUart(57);
+
+		// send string + ASCII
+	send_UARTString("Show temperature : ");
+	flow_ReportDataToUart(23);
+	
 	#endif
 	
 	init_ADCChannel(target_CH7);
-	reset_PowerOnTimes();
 	
     while(1)
     {		
@@ -712,14 +770,19 @@ void main (void)
 				
 		flow_EntryLowPower();
 
+		#if defined (ENABLE_UART)
+    	init_UART0();
+		#endif
+
 		set_gpio_Function(GPIO_TIMER,Disable);
 		Timer0_Delay(SYS_CLOCK,100,1000);
 		set_gpio_Function(GPIO_TIMER,Enable);
 
 		set_gpio_Function(GPIO_ADC,Disable);		
 		init_ADCChannel(target_CH7);
-		get_ADCConvertChannel();
-		set_gpio_Function(GPIO_ADC,Enable);		
+		flow_ReportDataToUart(get_ADCConvertChannel());
+		set_gpio_Function(GPIO_ADC,Enable);
+		
     }
 }
 

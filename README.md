@@ -1,6 +1,21 @@
 # MS51_PWD_WAKEUP
  MS51_PWD_WAKEUP
 
+update @ 2019/12/19
+
+1.P04 LED display , change to P17 (for easy monitor with MS51 TSSOP14 EVM)
+
+2. Enable UART , fix issue that enable UART will unable to entry power down mode
+
+- Disable UART interrupt before power down
+
+- Enable UART interrupt after wake up timer IRQ
+
+3. Add UART API to display ASCII
+
+4. Add define 16MHz and 24MHz
+
+
 update @ 2019/12/11
 
 Power down then wake up sample code
